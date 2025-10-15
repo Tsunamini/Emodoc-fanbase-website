@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emodoc - Official Links & Fan Hub</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Lucide Icons for social media -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // =============================================
+        // START:
+        const DEFAULT_FIREBASE_CONFIG = {
+            apiKey: "AIzaSyDTAWwSfnHUTVibVKjMVC1qCxBONqesA-w",
+            authDomain: "https://emodoc-landing-page.firebaseapp.com",
+            projectId: "emodoc-landing-page",
+            storageBucket: "https://emodoc-landing-page.firebasestorage.app" ,
+            messagingSenderId: "566382381473",
+            appId: "1:566382381473:web:5ce53d5d1c149e361623e0",
+        };
+
+        // --- Global Firebase and App Variables ---
+        // The environment provides these variables (__app_id, __firebase_config, __initial_auth_token).
+        // We use the environment's variables if they exist, otherwise we fall back to the defaults above.
+        const envAppId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const envFirebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Use environment's config if available, otherwise use the DEFAULT_FIREBASE_CONFIG
+        const firebaseConfig = envFirebaseConfig || DEFAULT_FIREBASE_CONFIG;
+        const appId = envAppId; // Use the provided app ID for Firestore pathing
+
+        // END: Manual Configuration Block
+        // ==================
+
+        let db, auth;
+        let userId = 'loading';
+        let isAuthReady = false;
+        let isFirestoreEnabled = false;
+
+        setLogLevel('debug'); 
+
+        // --- Utility Functions ---
+        function getVideoEmbedUrl(url) {
+            // Check for YouTube standard watch link
+            if (url.includes('youtube.com/watch')) {
+                try {
+                    const videoId = new URLSearchParams(new URL(url).search).get('v');
+                    return `https://www.youtube.com/embed/${videoId}`;
+                } catch (e) {
+                    return url; 
+                }
+            }
+            // Check for YouTube short links (youtu.be)
+            if (url.includes('youtu.be/')) {
+                 try {
+                    const urlParts = url.split('youtu.be/');
+                    if (urlParts.length > 1) {
+                        const videoId = urlParts[1].split(/[?#]/)[0]; 
+                         return `https://www.youtube.com/embed/${videoId}`;
+                    }
+                } catch (e) {
+                    return url; 
+                }
+            }
+            return url;
+        }
+
+        // --- Core Application Functions ---
+        async function initializeFirebase() {
+            const messageDiv = document.getElementById('fan-video-messages');
+            
+
+                messageDiv.innerHTML = `<p class="text-red-400 font-bold">Fan Hub Disabled: Please enter your Firebase config.</p>`;
+                document.getElementById('submit-video-btn').disabled = true;
+                document.getElementById('video-feed').innerHTML = `<p class="text-gray-400 text-center p-4">Cannot load fan videos without database access.</p>`;
+                return; 
+            }
+
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                isFirestoreEnabled = true;
+                
+                // 1. Authenticate the user
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                
+                // 2. Listen for Auth State Changes
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        isAuthReady = true;
+                        document.getElementById('user-id-display').textContent = `User ID: ${userId}`;
+                        console.log("Firebase Auth Ready. User ID:", userId);
+                        
+                        loadFanVideos();
+                    } else {
+                        console.log("User signed out or failed to sign in.");
+                        isAuthReady = true;
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase Initialization or Auth Error:", error);
+                messageDiv.innerHTML = `<p class="text-red-400">Error connecting to Fan Hub: ${error.message}.</p>`;
+                isFirestoreEnabled = false;
+            }
+        }
+        
+        // Path to the public collection for fan videos
+        const getFanVideosCollection = () => collection(db, 'artifacts', appId, 'public', 'data', 'emodoc_fan_videos');
+
+        // Function to submit a new video
+        window.addFanVideo = async function(event) {
+            event.preventDefault();
+            if (!isFirestoreEnabled) return; 
+            if (!isAuthReady) return console.warn("Authentication not ready.");
+
+            const nameInput = document.getElementById('fan-name');
+            const linkInput = document.getElementById('video-link');
+            const submitButton = document.getElementById('submit-video-btn');
+            const messageDiv = document.getElementById('fan-video-messages');
+            
+            const name = nameInput.value.trim();
+            const link = linkInput.value.trim();
+            
+            if (!name || !link) {
+                messageDiv.innerHTML = `<p class="text-red-400">Please enter both your name and a video link.</p>`;
+                return;
+            }
+
+            submitButton.disabled = true;
+            submitButton.textContent = 'Submitting...';
+            messageDiv.innerHTML = '';
+
+            try {
+                await addDoc(getFanVideosCollection(), {
+                    name: name,
+                    videoLink: link,
+                    timestamp: Date.now(),
+                    userId: userId,
+                });
+
+                nameInput.value = '';
+                linkInput.value = '';
+                messageDiv.innerHTML = `<p class="text-green-400">Video link submitted successfully!</p>`;
+
+            } catch (error) {
+                console.error("Error adding document: ", error);
+                messageDiv.innerHTML = `<p class="text-red-400">Submission failed. Check your link format.</p>`;
+            } finally {
+                submitButton.disabled = false;
+                submitButton.textContent = 'Share My Vibe!';
+            }
+        }
+        
+        // Function to load and display videos in real-time
+        function loadFanVideos() {
+            if (!isFirestoreEnabled || !isAuthReady) return;
+            const videoFeed = document.getElementById('video-feed');
+            
+            const q = query(getFanVideosCollection());
+
+            onSnapshot(q, (snapshot) => {
+                let fanVideos = [];
+                snapshot.forEach((doc) => {
+                    fanVideos.push({ id: doc.id, ...doc.data() });
+                });
+                
+                // Sort locally by timestamp (newest first)
+                fanVideos.sort((a, b) => b.timestamp - a.timestamp);
+
+                videoFeed.innerHTML = ''; // Clear existing videos
+
+                if (fanVideos.length === 0) {
+                    videoFeed.innerHTML = `<p class="text-gray-400 text-center p-4">Be the first to share your vibe! No videos yet.</p>`;
+                    return;
+                }
+
+                fanVideos.forEach(video => {
+                    const embedUrl = getVideoEmbedUrl(video.videoLink);
+                    const isEmbeddable = embedUrl.includes('embed');
+                    
+                    const videoCard = `
+                        <div class="bg-primary-dark p-4 rounded-xl shadow-lg border border-gray-700">
+                            <p class="text-sm text-accent-gold font-bold mb-2">Vibes by ${video.name}</p>
+                            <!-- Embed or Link based on URL parsing -->
+                            ${isEmbeddable ? 
+                                `<div class="aspect-video bg-gray-900 rounded-lg overflow-hidden">
+                                    <iframe 
+                                        src="${embedUrl}" 
+                                        frameborder="0" 
+                                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                                        allowfullscreen 
+                                        class="w-full h-full"
+                                        title="Fan Video by ${video.name}">
+                                    </iframe>
+                                </div>`
+                                : 
+                                `<div class="bg-gray-800 p-3 rounded-lg text-center">
+                                    <p class="text-sm text-gray-300 truncate">
+                                        <i data-lucide="link" class="inline-block w-4 h-4 mr-2"></i> 
+                                        <a href="${video.videoLink}" target="_blank" class="hover:underline">${video.videoLink} (Click to View)</a>
+                                    </p>
+                                </div>`
+                            }
+                            <p class="text-xs text-gray-500 mt-2">Shared: ${new Date(video.timestamp).toLocaleDateString()}</p>
+                        </div>
+                    `;
+                    videoFeed.innerHTML += videoCard;
+                });
+                renderIcons(); 
+            }, (error) => {
+                console.error("Firestore Snapshot Error:", error);
+                videoFeed.innerHTML = `<p class="text-red-400 text-center p-4">Error loading videos. Try reloading the page.</p>`;
+            });
+        }
+
+        // Initialize Firebase on window load
+        window.addEventListener('load', initializeFirebase);
+        
+    </script>
+    <!-- End of Firebase Setup -->
+
+    <style>
+        /* Custom styles */
+        body {
+            font-family: 'Inter', sans-serif;
+            /* Gradient Background inspired by the sample image's dark theme */
+            background: linear-gradient(180deg, #18181b 0%, #27272a 50%, #18181b 100%);
+            min-height: 100vh;
+        }
+        .link-button {
+            /* Consistent button styling for links */
+            transition: all 0.2s;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+        }
+        .link-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 10px rgba(0, 0, 0, 0.3);
+            background-color: #3f3f46; /* slightly lighter on hover */
+        }
+        .submit-btn {
+            background-color: #3b82f6; /* Accent Gold */
+            color: black;
+            transition: background-color 0.2s;
+        }
+        .submit-btn:hover:enabled {
+            background-color: #b78326; 
+        }
+        .submit-btn:disabled {
+            background-color: #4b5563; 
+            cursor: not-allowed;
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary-dark': '#1f2937',
+                        'secondary-dark': '#374151',
+                        'accent-gold': '#d69e2e', /* Use a subtle gold for accent */
+                    }
+                }
+            }
+        }
+
+        // Function to render icons (Lucide)
+        function renderIcons() {
+            try {
+                lucide.createIcons();
+            } catch (e) {
+                console.warn("Lucide icon rendering failed:", e);
+            }
+        }
+        
+        // Initial call to render static icons on page load
+        window.addEventListener('DOMContentLoaded', renderIcons);
+
+
+        // Fallback for copy command (since navigator.clipboard.writeText often fails in iframes)
+        function copyToClipboard(text) {
+            const tempInput = document.createElement("input");
+            tempInput.value = text;
+            document.body.appendChild(tempInput);
+            tempInput.select();
+            document.execCommand('copy');
+            document.body.removeChild(tempInput);
+
+            // Simple notification message
+            const notification = document.getElementById('copy-notification');
+            notification.classList.remove('hidden');
+            setTimeout(() => {
+                notification.classList.add('hidden');
+            }, 2000);
+        }
+    </script>
+</head>
+<body class="text-white flex flex-col items-center py-8 px-4">
+
+    <!-- Copy Notification -->
+    <div id="copy-notification" class="hidden fixed top-4 bg-accent-gold text-black px-4 py-2 rounded-lg shadow-xl z-50 transition-opacity">
+        Copied to clipboard!
+    </div>
+    
+    <!-- User ID for Collaboration (Mandatory for multi-user apps) -->
+    <div id="user-id-display" class="fixed top-2 left-2 text-xs text-gray-500 bg-gray-900 p-1 rounded z-50">
+        Loading User ID...
+    </div>
+
+    <!-- Main Container - Narrow and Centered for Mobile-first Linktree look -->
+    <div class="w-full max-w-sm flex flex-col items-center space-y-8">
+
+        <!-- Artist Header and Profile Photo -->
+        <header class="flex flex-col items-center space-y-4">
+            <!-- Profile Photo Placeholder -->
+            <img 
+                src="coverphoto.jpg" 
+                alt="Emodoc Profile Picture" 
+                class="w-32 h-32 rounded-full border-4 border-blue-400 shadow-lg object-cover"
+                onerror="this.onerror=null; this.src='https://placehold.co/128x128/3f3f46/ffffff?text=Emodoc';"
+            >
+
+            <!-- Artist Name -->
+            <h1 class="text-4xl font-bold tracking-wider">EMODOC</h1>
+
+            <!-- Bio / Writeup -->
+            <p class="text-center text-gray-300 px-4 text-lg italic">
+                The sound of the future. Blending Afrobeat rhythms with soulful storytelling and global influences.
+            </p>
+        </header>
+
+        <!-- Social Media Icons (Top Row) -->
+        <section class="flex space-x-6 justify-center pt-2">
+            <!-- Instagram -->
+            <a href="https://www.instagram.com/emodocgrm?igsh=MTQ0aXN4eXl2N2J5MA==" class="text-gray-400 hover:text-accent-gold transition" aria-label="Emodoc on Instagram">
+                <i data-lucide="instagram" class="w-8 h-8"></i>
+            </a>
+            <!-- TikTok -->
+            <a href="https://vt.tiktok.com/ZSD95ae1R/" class="text-gray-400 hover:text-accent-gold transition" aria-label="Emodoc on TikTok">
+              <i data-lucide="mic" class="w-8 h-8"></i> <!-- Fallback icon if 'tiktok' is not recognized -->
+                                
+            </a>
+            <!-- YouTube -->
+            <a href="#youtube" class="text-gray-400 hover:text-accent-gold transition" aria-label="Emodoc on YouTube">
+                <i data-lucide="youtube" class="w-8 h-8"></i>                
+            </a>
+            <!-- Spotify -->
+            <a href="#spotify" class="text-gray-400 hover:text-accent-gold transition" aria-label="Emodoc on Spotify">
+              <i data-lucide="headphones" class="w-8 h-8"></i> <!-- Fallback icon if 'spotify' is not recognized -->
+
+            </a>
+        </section>
+        
+        <!-- Linktree Style Buttons -->
+        <nav class="w-full flex flex-col space-y-4">
+            
+            <!-- Latest Release/Album Link (The main focus link) -->
+            <a href="https://emodoc.fanlink.tv/islandBIH" class="link-button bg-secondary-dark p-3 rounded-xl flex items-center space-x-4">
+                <!-- Album Art Thumbnail -->
+                <img 
+                    src="islandbih.jpg" 
+                    alt="Latest Release Album Art" 
+                    class="w-16 h-16 rounded-lg object-cover shadow-md"
+                    onerror="this.onerror=null; this.src='https://placehold.co/64x64/3f3f46/ffffff?text=ART';"
+                >
+                <div class="flex flex-col">
+                    <span class="text-xs font-medium text-gray-400 uppercase tracking-wider">Listen Now!</span>
+                    <span class="text-xl font-semibold">New Single: "Island Bih"</span>
+                </div>
+            </a>
+
+            <!-- Streaming Platform Link 1: Spotify -->
+            <a href="https://open.spotify.com/artist/4PzHiOun6OX5rSsNZZdSws?si=LHuCxmTKSlu3wmI8-c2pVA" class="link-button bg-secondary-dark p-4 rounded-xl text-center text-xl font-medium flex justify-between items-center">
+                <span>Spotify</span>
+                <i data-lucide="spotify" class="w-6 h-6 text-green-500"></i>
+            </a>
+
+            <!-- Streaming Platform Link 2: Apple Music -->
+            <a href="https://music.apple.com/us/artist/emodoc/1570244784" class="link-button bg-secondary-dark p-4 rounded-xl text-center text-xl font-medium flex justify-between items-center">
+                <span>Apple Music</span>
+                <i data-lucide="apple" class="w-6 h-6 text-red-500"></i>
+            </a>
+
+            <!-- Social/Video Link 1: YouTube -->
+            <a href="https://youtube.com/channel/UCdG5thkkgKVeiadT044yAKQ?si=4tYSB_qwTKxl1Z_z" class="link-button bg-secondary-dark p-4 rounded-xl text-center text-xl font-medium flex justify-between items-center">
+                <span>Watch on YouTube</span>
+                <i data-lucide="youtube" class="w-6 h-6 text-red-600"></i>
+            </a>
+
+            <!-- Email/Contact Link -->
+            <button onclick="copyToClipboard('emodocmusic@gmail.com')" class="link-button bg-secondary-dark p-4 rounded-xl text-center text-xl font-medium flex justify-between items-center cursor-pointer">
+                <span>Contact/Booking</span>
+                <i data-lucide="mail" class="w-6 h-6 text-accent-gold"></i>
+            </button>
+            
+        </nav>
+        
+        <!-- --- FAN VIBES SECTION --- -->
+        <section class="w-full pt-8 space-y-4">
+            <h2 class="text-3xl font-bold text-center text-blue-400 border-b border-gray-700 pb-2"> Be a Part of the Fanbase </h2>
+            
+            <!-- Video Submission Form -->
+            <div class="bg-secondary-dark p-6 rounded-xl shadow-2xl border border-accent-gold/50">
+                <h3 class="text-xl font-semibold mb-3 text-center">Share Your Vibe!</h3>
+                <p class="text-sm text-gray-400 mb-4 text-center">Paste a public link (TikTok, Instagram, Facebook etc.) to your video grooving to the latest EP.</p>
+                
+                <form onsubmit="addFanVideo(event)" class="space-y-4">
+                    <input type="text" id="fan-name" placeholder="Your Name or Handle" required
+                           class="w-full px-4 py-3 bg-gray-800 rounded-lg border border-gray-700 focus:border-accent-gold focus:ring focus:ring-accent-gold/50 text-white placeholder-gray-500">
+                           
+                    <input type="url" id="video-link" placeholder="Public Video Link (e.g., youtube.com/...)" required
+                           class="w-full px-4 py-3 bg-gray-800 rounded-lg border border-gray-700 focus:border-accent-gold focus:ring focus:ring-accent-gold/50 text-white placeholder-gray-500">
+                           
+                    <button type="submit" id="submit-video-btn" class="submit-btn w-full py-3 rounded-lg text-lg font-bold shadow-md">
+                        Share Your Vibe!
+                    </button>
+                    
+                    <div id="fan-video-messages" class="text-center mt-2 text-sm h-4"></div>
+                </form>
+            </div>
+            
+            <!-- Video Feed Display -->
+            <div id="video-feed" class="w-full space-y-4">
+                <p class="text-gray-400 text-center">Welcome to Doc's Verse ...</p>
+            </div>
+            
+        </section>
+        <!-- --- END FAN VIBES SECTION --- -->
+
+
+        <!-- Footer / Credits -->
+        <footer class="pt-8 text-center text-xs text-gray-500">
+            DOC'S VERSE
+        </footer>
+    </div>
+
+</body>
+</html>
